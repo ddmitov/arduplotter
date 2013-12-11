@@ -1,0 +1,17 @@
+#!/usr/bin/perl -w
+
+# Test script for Arduplotter.
+
+use strict;
+use warnings;
+use Time::HiRes qw/sleep/;
+
+# Set the standard output to auto-flush:
+select((select(STDOUT), $| = 1)[0]);
+
+while(1) {
+	print "13.00\n";
+	sleep(1);
+	print "12.50\n";
+	sleep(1);
+}

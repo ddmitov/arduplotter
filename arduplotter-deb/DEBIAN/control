@@ -1,0 +1,13 @@
+Section: misc
+Priority: optional
+Homepage: <https://github.com/ddmitov/arduplotter.git>
+Package: Arduplotter
+Version: 0.3
+Maintainer: Dimitar D. Mitov <ddmitov@yahoo.com>
+Depends: perl (>=5.8.0), gnuplot (>= 4.6), imagemagick (>= 6.7.7-10)
+Architecture: all
+Description: Arduplotter - real-time plotter for Arduino devices
+  Arduplotter reads data from an Arduino serial port and produces a real-time plot using gnuplot.
+  Dimitar D. Mitov, 2013.
+  Created for the Telerik Academy Linux System Administration Course,
+  July - October 2013.

@@ -1,0 +1,1109 @@
+#!/usr/bin/perl
+
+# Arduplotter v. 0.3
+# Real-time plotter for Arduino devices.
+# Arduplotter reads data from an Arduino serial port and produces a real-time plot using gnuplot.
+# This script is licensed under the GNU Free Documentation License 1.2.
+
+# Dimitar D. Mitov, 2013.
+# Created for the Telerik Academy Linux System Administration Course,
+# July - October 2013.
+# https://telerikacademy.com/
+
+# FEATURES:
+# It reads data from an Arduino serial port and produces a real-time plot using gnuplot in three plotting modes:
+# 1.) All measured values are accumulated and plotted with clock time on the x-axis or
+# 2.) All measured values are accumulated and plotted with chronometer time on the x-axis.
+# 3.) Only latest N number of mesurements are displayed.
+# After no more data is comming from the device or Ctrl-\ is pressed,
+# a final plot file is produced and displayed.
+# Arduino device is automatically detected and can be
+# (re)connected at any time without restarting the program or manually changing anything.
+# Arduino device can be detected by using one of the two configurable methods:
+# 1.) Sending a query string to the board and waiting for a predefined identifier or
+# 2.) Reading a specific identifier comming out of the serial port of the Arduino device.
+# All the settings are stored in ~/arduplotter/arduplotter.cfg.
+# This file can be changed at any time with any text editor.
+# Settings from command line are also saved in the configuration file for later reuse.
+
+# DEPENDENCIES:
+# I.) Perl Modules:
+# 1. POSIX (core module),
+# 2. File::Copy (core module),
+# 3. Term::ANSIColor (core module),
+# 4. FindBin (core module),
+# II.) Linux core commands:
+# 5. hal-find-by-capability (core command),
+# 6. hal-device (core command),
+# 7. lsof (core command),
+# III.) External programs:
+# 8. gnuplot,
+# 9. display (part of ImageMagick).
+
+# ACKNOWLEDGEMENTS:
+# 1. J.P. Hendrix for his well documented script "Plot real time data using Gnuplot".
+# This script is grounded on his excelent work!
+# http://wirespeed.xs4all.nl/mediawiki/index.php/Plot_real_time_data_using_Gnuplot
+# Licensed under GNU Free Documentation License 1.2.
+# 2. Plotting functions:
+# http://www.gnuplotting.org/tag/wxt/
+# 3. How i can read tty file with timeout?
+# http://stackoverflow.com/questions/6713668/how-i-can-read-tty-file-with-timeout
+# 4. How do I remove duplicate items from an array in Perl?
+# http://stackoverflow.com/questions/7651/how-do-i-remove-duplicate-items-from-an-array-in-perl
+# 5. Arduino and Linux TTY:
+# http://playground.arduino.cc/Interfacing/LinuxTTY
+# 6. Running parallel processes without communication:
+# http://www.perlmonks.org/?node_id=880265
+# 7. Fuser under perl:
+# http://www.perlmonks.org/?node_id=36349
+# 8. Exporting a scalar variable using Perl:
+# http://johnbokma.com/mexit/2006/07/05/exporting-scalar-variable-perl.html
+# 9. How to remove, copy or rename a file with Perl:
+# http://perlmaven.com/how-to-remove-copy-or-rename-a-file-with-perl
+# 10. How can I create a directory if one doesn't exist using Perl?
+# http://stackoverflow.com/questions/701458/how-can-i-create-a-directory-if-one-doesnt-exist-using-perl
+# 11. Hashes in Perl:
+# http://perlmaven.com/perl-hashes
+# 12. Exploring the color palette:
+# http://www.perlmonks.org/?node_id=509827
+# 13. How to sort a hash in Perl?
+# http://perlmaven.com/how-to-sort-a-hash-in-perl
+# 14. What is the correct way to break a line of Perl code into two?
+# http://stackoverflow.com/questions/3984769/what-is-the-correct-way-to-break-a-line-of-perl-code-into-two
+# 15. @ARGV in Perl:
+# http://perlmaven.com/argv-in-perl
+# 16. How to use GnuPlot to plot a time series chart from a CSV file date and time stored in separate columns?
+# http://stackoverflow.com/questions/10921043/how-to-use-gnuplot-to-plot-a-time-series-chart-from-a-csv-file-date-and-time-sto
+
+# These variables are considered read-only.
+my $NAME = "Arduplotter";
+my $VERSION = "0.2";
+
+### HEADING:
+###
+print <<HEADING;
+
+$NAME, v.$VERSION
+Real-time plotter for Arduino devices.
+Reads data from an Arduino serial port and produces a real-time plot using gnuplot.
+HEADING
+
+$|=1; # Disable in-built Perl buffering
+
+### MODULES:
+###
+use strict;
+use warnings;
+use POSIX qw(strftime);
+use File::Copy qw(copy);
+use Term::ANSIColor;
+use FindBin qw($Bin $RealScript);
+
+### INITIALIZATION OF VARIABLES AND ARRAYS:
+###
+# Filenames:
+my $skeleton_configuration_filename = "arduplotter_skel.cfg";
+my $configuration_filename = "arduplotter.cfg";
+my $arduino_test_identifier_only_filename = "arduplotter_test_identifier_only.ino";
+my $arduino_test_query_identifier_filename = "arduplotter_test_query_identifier.ino";
+my $pc_test_filename = "arduplotter_test";
+# Folders:
+my $script_user_directory = "$ENV{HOME}/arduplotter/";
+my $script_common_directory;
+if (-d "/etc/arduplotter/"){
+	$script_common_directory = "/etc/arduplotter/";
+} else {
+	$script_common_directory = "$Bin/";
+}
+# Pathnames:
+my $default_configuration_pathname = $script_user_directory . $configuration_filename;
+my $skeleton_configuration_pathname = $script_common_directory . $skeleton_configuration_filename;
+my $common_arduino_test_identifier_only_pathname = $script_common_directory . $arduino_test_identifier_only_filename;
+my $common_arduino_test_query_identifier_pathname = $script_common_directory . $arduino_test_query_identifier_filename;
+my $user_arduino_test_identifier_only_pathname = $script_user_directory . $arduino_test_identifier_only_filename;
+my $user_arduino_test_query_identifier_pathname = $script_user_directory . $arduino_test_query_identifier_filename;
+
+#Serial port variables:
+my @udi;
+my $arduino_serial_port = "unavailable";
+my @hal_device_output;
+my $serial_port;
+my @serial_ports;
+my @raw_blacklisted_ports;
+my @blacklisted_ports;
+my $blacklisted_port;
+my $last_blacklisting_of_serial_port = 0;
+my @busy_serial_ports;
+my $busy_serial_port;
+
+# Data storage & measurement variables:
+my $raw_data;
+my $data = 0;
+my @gnuplot_measurement;
+my @gnuplot_time_axis;
+my $measurements_counter = 0;
+
+# Time variables:
+my $last_measurement_time;
+my $last_measurement_date_and_time;
+my $elapsed_time = 0;
+my $start_time;
+my $start_date_and_time;
+my $final_plot_date_and_time;
+
+# Final plot variables:
+my $sigquit;
+my $final_plot = "disabled";
+my $final_plot_file = "";
+
+my $test_mode = "disabled";
+
+### CRITICAL DEPENDENCY CHECKS AND WARNINGS:
+###
+my $missing_critical_dependencies_and_preconditions = 0;
+
+# Make sure gnuplot is available:
+unless (-e "/usr/bin/gnuplot"){
+	print <<NO_GNUPLOT;
+
+gnuplot is missing and this is a critical dependecy!
+Install it and then start again.
+If you are on a Debian or Ubuntu based system,
+install the package by typing as root: 
+apt-get install gnuplot
+NO_GNUPLOT
+	$missing_critical_dependencies_and_preconditions++;
+}
+
+# Make sure display is available:
+unless (-e "/usr/bin/display"){
+	print <<NO_IMAGE_MAGICK;
+
+ImageMagick is missing and this is a critical dependecy!
+Install it and then start again.
+If you are on a Debian or Ubuntu based system,
+install the package by typing as root: 
+apt-get install imagemagick
+NO_IMAGE_MAGICK
+	$missing_critical_dependencies_and_preconditions++;
+}
+
+# If there is even one missing critical dependency or precondition, exit:
+if ($missing_critical_dependencies_and_preconditions > 0){
+	print "\nQuitting.\n\n";
+	exit;
+}
+
+### CONFIGURATION SETTINGS & COMMAND LINE ARGUMENTS:
+###
+# Initialization of basic configuration data structures:
+my @settings_to_check = ("port_baudrate", "port_databits", "port_filter",
+					"arduino_identification_method", 
+					"plotting_mode",
+					"plotting_time");
+my %default_settings = (port_baudrate => 115200,
+					port_databits => 8,
+					port_filter => "all",
+					arduino_identification_method => "query_string_and_identifier",
+					plotting_mode => "accumulation",
+					plotting_time => "clock");
+# Pipes '|' at the beginning and at the end of the acceptable_settings hash variables must not be missed!
+# Configuration settings verification code won't work correctly without them!
+my %acceptable_settings = (port_baudrate => "|300|600|1200|2400|4800|9600|14400|19200|28800|38400|57600|115200|",
+						port_databits => "|5|6|7|8|",
+						port_filter => "|all|rs232|usb|",
+						arduino_identification_method => "|query_string_and_identifier|identifier_only|",
+						plotting_mode => "|accumulation|latest_measurements|",
+						plotting_time => "|clock|chronometer|");
+my %settings;
+my %user_settings;
+
+# Command line arguments:
+foreach my $command_line_argument (@ARGV){
+	(my $command_line_flag, my $command_line_value)=split(/\=/,$command_line_argument);
+	if ($command_line_flag =~ "--id-method" or $command_line_flag =~ "-IM"){
+		if ($command_line_value =~ "query-id"){
+			$user_settings{arduino_identification_method} = "query_string_and_identifier";
+		} elsif ($command_line_value =~ "id-only"){
+			$user_settings{arduino_identification_method} = "identifier_only";
+		}
+	} elsif ($command_line_flag =~ "--query" or $command_line_flag =~ "-Q"){
+		$user_settings{arduino_query_string} = $command_line_value;
+	} elsif ($command_line_flag =~ "--id" or $command_line_flag =~ "-I"){
+		$user_settings{arduino_identifier} = $command_line_value;
+	} elsif ($command_line_flag =~ "--plotting" or $command_line_flag =~ "-P"){
+		if ($command_line_value =~ "accumulation"){
+			$user_settings{plotting_mode} = "accumulation";
+		} elsif ($command_line_value =~ "latest"){
+			$user_settings{plotting_mode} = "latest_measurements";
+		}
+	} elsif ($command_line_flag =~ "--time" or $command_line_flag =~ "-TM"){
+		if ($command_line_value =~ "clock"){
+			$user_settings{plotting_time} = "clock";
+		} elsif ($command_line_value =~ "chronometer"){
+			$user_settings{plotting_time} = "chronometer";
+		}
+	} elsif ($command_line_flag =~ "--test" or $command_line_flag =~ "-T"){
+		$test_mode = "enabled";
+	} elsif ($command_line_flag =~ "--help" or $command_line_flag =~ "-H"){
+		help ();
+	}
+}
+
+# Don't mix command line arguments with first-run user input.
+splice @ARGV, 0;
+
+# Do not allow test mode before script files are copied in the script user directory:
+if (not -e $default_configuration_pathname and $test_mode =~ "enabled"){
+	unless(-d $script_user_directory){
+		mkdir($script_user_directory);
+	}
+	copy $skeleton_configuration_pathname, $default_configuration_pathname;
+	copy $common_arduino_test_identifier_only_pathname, $user_arduino_test_identifier_only_pathname;
+	copy $common_arduino_test_query_identifier_pathname, $user_arduino_test_query_identifier_pathname;
+}
+
+# Locate the configuration file:
+my $configuration_file;
+if (-e $default_configuration_pathname){
+	$configuration_file = $default_configuration_pathname;
+} elsif (-e $skeleton_configuration_pathname){
+	# Create script home directory, if it doesn't exist:
+	unless(-d $script_user_directory){
+		mkdir($script_user_directory);
+	}
+	copy $skeleton_configuration_pathname, $default_configuration_pathname;
+	copy $common_arduino_test_identifier_only_pathname, $user_arduino_test_identifier_only_pathname;
+	copy $common_arduino_test_query_identifier_pathname, $user_arduino_test_query_identifier_pathname;
+	$configuration_file = $default_configuration_pathname;
+	# Ask first-run configuration questions:
+	print <<FIRST_RUN;
+
+It seems that you have started $NAME for the first time.
+Configuration file named '$configuration_filename' will be created in:
+$script_user_directory
+Now you have to answer a few questions, so that your Arduino will be
+correctly identified and your data will be properly plotted.
+Configuration file can be changed at any time later with any text editor.
+Command line arguments (if any) will be taken into consideration and
+you will not be asked for information you have already supplied.
+Settings from command line are also saved in the configuration file for later reuse.
+FIRST_RUN
+	if (not exists $user_settings{port_filter}){
+		print "\nWhich serial ports should be tested for your Arduino device?\n";
+		print color ("bold"), "1", color ("reset"); print " - all serial ports (default = Enter)\n";
+		print color ("bold"), "2", color ("reset"); print " - only RS232 serial ports\n";
+		print color ("bold"), "3", color ("reset"); print " - only USB serial ports\n";
+		print "[1/2/3]: ";
+		my $user__port_filter = <>;
+		if ($user__port_filter =~ "1" or $user__port_filter =~ m/^\n/){
+			$user_settings{port_filter} = "all";
+			print "Your choice: 1\n";
+		} elsif ($user__port_filter =~ "2"){
+			$user_settings{port_filter} = "rs232";
+			print "Your choice: 2\n";
+		} elsif ($user__port_filter =~ "3"){
+			$user_settings{port_filter} = "usb";
+			print "Your choice: 3\n";
+		}
+	}
+	if (not exists $user_settings{arduino_identification_method}){
+		print "\nHow should be identified your Arduino device?\n";
+		print color ("bold"), "1", color ("reset"); print " - with a query string and identifier (default = Enter)\n";
+		print "    $NAME will send a query string to your device and will expect a predefined identifier.\n";
+		print color ("bold"), "2", color ("reset"); print " - only with an identifier\n";
+		print "    $NAME will expect a predefined identifier immediately after successfull connection.\n";
+		print "[1/2]: ";
+		my $user__arduino_identification_method = <>;
+		if ($user__arduino_identification_method =~ "1" or $user__arduino_identification_method =~ m/^\n/){
+			$user_settings{arduino_identification_method} = "query_string_and_identifier";
+			print "Your choice: 1\n";
+		} elsif ($user__arduino_identification_method =~ "2"){
+			$user_settings{arduino_identification_method} = "identifier_only";
+			print "Your choice: 2\n";
+		}
+	}
+	if ($user_settings{arduino_identification_method} =~ "query_string_and_identifier" and
+	not exists $user_settings{arduino_query_string}){
+		print "\nWhat is the query string, that should be sent over serial port to your Arduino device?\n";
+		print "Query string - exactly like the one in your Arduino sketch: ";
+		chomp (my $user__arduino_query_string = <>);
+		$user_settings{arduino_query_string} = $user__arduino_query_string;
+		print "Your input: $user_settings{arduino_query_string}\n";
+	}
+	if (not exists $user_settings{arduino_identifier}){
+		print "\nWhat is the identifier in the beginning of your Arduino serial messages?\n";
+		print "Identifier - exactly like the one in your Arduino sketch: ";
+		chomp (my $user__arduino_identifier = <>);
+		$user_settings{arduino_identifier} = $user__arduino_identifier;
+		print "Your input: $user_settings{arduino_identifier}\n";
+	}
+	if (not exists $user_settings{plotting_mode}){
+		print "\nHow to plot the data from your Arduino?\n";
+		print color ("bold"), "1", color ("reset"); print " - accumulate all measurements on a single plot (default = Enter)\n";
+		print "    After no more data is comming from the device or Ctrl-\\ is pressed,\n";
+		print "    a final plot file is produced and displayed.\n";
+		print color ("bold"), "2", color ("reset"); print " - only the last N measurements will be displayed\n";
+		print "[1/2]: ";
+		my $user__plotting_mode = <>;
+		if ($user__plotting_mode =~ "1" or $user__plotting_mode =~ m/^\n/){
+			$user_settings{plotting_mode} = "accumulation";
+			print "Your choice: 1\n";
+		} elsif ($user__plotting_mode =~ "2"){
+			$user_settings{plotting_mode} = "latest_measurements";
+			print "Your choice: 2\n";
+		}
+	}
+	if ($user_settings{plotting_mode} =~ "accumulation" and
+	not exists $user_settings{plotting_time}){
+		print "\nHow to display time on your plots?\n";
+		print color ("bold"), "1", color ("reset"); print " - clock\n";
+		print "    Time will be displayed from start to end just like on your computer's clock (default = Enter)\n";
+		print color ("bold"), "2", color ("reset"); print " - chronometer\n";
+		print "    Time will be counted from your first measurement.\n";
+		print "[1/2]: ";
+		my $user__plotting_mode = <>;
+		if ($user__plotting_mode =~ "1" or $user__plotting_mode =~ m/^\n/){
+			$user_settings{plotting_time} = "clock";
+			print "Your choice: 1\n";
+			sleep (1);
+		} elsif ($user__plotting_mode =~ "2"){
+			$user_settings{plotting_time} = "chromometer";
+			print "Your choice: 2\n";
+			sleep (1);
+		}
+	}
+	save_configuration_changes();
+} elsif (-e "$Bin/$configuration_filename"){
+	$configuration_file = "$Bin/$configuration_filename";
+} else {
+	print <<MISSING_CONFIGURATION_FILES;
+
+Configuration file and skeleton configuration file are both missing!
+Command line arguments will be used, if any, or, as a last resort,
+the default hardcoded configuration values.
+MISSING_CONFIGURATION_FILES
+	%settings = %default_settings;
+	goto FIND_ARDUINO_PORT;
+}
+
+# Open the configuration file for reading:
+my $read_only_configuration_filehandle;
+open ($read_only_configuration_filehandle, "<", "$configuration_file");
+my @read_only_configuration_array=<$read_only_configuration_filehandle>;
+close ($read_only_configuration_filehandle);
+
+# Get configuration settings:
+my $configuration_name;
+my $configuration_value;
+foreach my $configuration_line (@read_only_configuration_array){
+	chomp $configuration_line;
+	unless (length($configuration_line) < 1 or $configuration_line =~ m/^\s*\#/){
+		if ($configuration_line =~ "#"){
+			(my $before_number_sign, my $after_number_sign)=split(/\#/,$configuration_line);
+			$before_number_sign =~ s/\s*$//;
+			($configuration_name, $configuration_value)=split(/\=/,$before_number_sign);
+			$configuration_name =~ s/\s*$//; # remove whitespace at the end of the string
+			$configuration_value =~ s/^\s*//; # remove whitespace at the beginning of the string
+			$settings{$configuration_name} = $configuration_value;
+		} else {
+			($configuration_name, $configuration_value)=split(/\=/,$configuration_line);
+			$configuration_name =~ s/\s*$//; # remove whitespace at the end of the string
+			$configuration_value =~ s/^\s*//; # remove whitespace at the beginning of the string
+			$settings{$configuration_name} = $configuration_value;
+		}
+	}
+}
+
+# Injection of the command line settings into the settings read from the configuration file:
+foreach my $setting_name (keys %settings) {
+	if (exists $user_settings{$setting_name}){
+		$settings{$setting_name} = $user_settings{$setting_name}
+	}
+}
+save_configuration_changes();
+
+# Configuration settings verification:
+my @invalid_variables;
+foreach my $settings_name (@settings_to_check){
+	if (exists ($settings{$settings_name}) and defined ($settings{$settings_name})){
+		unless ($acceptable_settings{$settings_name} =~ m/\|$settings{$settings_name}\|/){
+			delete ($settings{$settings_name});
+			push (@invalid_variables, $settings_name);
+			$settings{$settings_name} = $default_settings{$settings_name};
+		}
+	} else {
+		delete ($settings{$settings_name});
+		push (@invalid_variables, $settings_name);
+		$settings{$settings_name} = $default_settings{$settings_name};
+	}
+}
+save_configuration_changes();
+
+# Display configuration information:
+print "\nConfiguration file: $configuration_file\n";
+my $number_of_invalid_variables = scalar (@invalid_variables);
+if ($number_of_invalid_variables > 0){
+	print "Number of invalid configuration entries: $number_of_invalid_variables\n";
+	print "Invalid configuration entries:\n";
+	foreach my $invalid_variable (@invalid_variables){
+		print "$invalid_variable\n";
+	}
+	print "Default hardcoded configuration values will be used instead of the invalid entries.\n";
+}
+print "\n  CONFIGURATION SETTINGS:\n";
+foreach my $current_settings_name (sort keys %settings) {
+	print ">--------------------\n";
+	print "  $current_settings_name => $settings{$current_settings_name}\n";
+}
+print ">--------------------\n";
+
+### SKIP STEPS, WHICH ARE NOT NECESSARY IN TEST MODE:
+###
+if ($test_mode =~ "enabled"){
+	goto START_GNUPLOT;
+}
+
+### ARDUINO SERIAL PORT FINDER:
+###
+FIND_ARDUINO_PORT:
+
+# Check for signals:
+signal_handler ();
+# Check the blacklisted ports array for a timeout:
+blacklist_timeout ();
+
+# Print introductory message:
+if ($settings{port_filter} =~ "all"){
+	print "\nTesting all serial ports...\n";
+} elsif ($settings{port_filter} =~ "rs232"){
+	print "\nTesting RS232 serial ports...\n";
+} elsif ($settings{port_filter} =~ "usb"){
+	print "\nTesting USB serial ports...\n";
+}
+
+# Find and filter serial ports according to the user settings.
+# Ask HAL for "universal device identifiers" (UDIs) of all serial ports:
+my @raw_udi = `hal-find-by-capability --capability serial`;
+foreach my $raw_udi (@raw_udi) {
+	if ($settings{port_filter} =~ "all"){
+			push(@udi, $raw_udi);
+	} elsif ($settings{port_filter} =~ "rs232"){
+		if ($raw_udi !~ "usb"){
+			push(@udi, $raw_udi);
+		}
+	} elsif ($settings{port_filter} =~ "usb"){
+		if ($raw_udi =~ "usb"){
+			push(@udi, $raw_udi);
+		}
+	}
+}
+
+# Find available (not used by another application and not blacklisted) serial ports:
+foreach my $udi (@udi) {
+	# Extract serial port device filenames from hal-device output:
+	@hal_device_output = `hal-device $udi`;
+	foreach my $hal_device_output_line (@hal_device_output) {
+		if ($hal_device_output_line =~ "device_file") {
+			# Extract only device filenames. They are in single quotes like:
+			# '/dev/ttyS0'
+			# Everything before and after the single quotes is discarded:
+			(my $before_text, my $serial_port_name, my $after_text) = split (/\'/, $hal_device_output_line);
+			# Check if device file exists:
+			if (-e $serial_port_name) {
+				# Check if another program is using the port:
+				my $lsof_test = `lsof $serial_port_name`;
+				# If no other program is using the port, push it into serial_ports array.
+				if (length($lsof_test) < 1){
+					# Avoid duplicated serial port filenames and check if serial port is not blacklisted:
+					if (not grep (/$serial_port_name/, @serial_ports) and
+					not grep (/$serial_port_name/, @blacklisted_ports) and
+					not grep (/$serial_port_name/, @busy_serial_ports) ){
+						push(@serial_ports, $serial_port_name);
+					}
+				# If another program is using the port, push it into the busy_serial_ports array.
+				} else {
+					# Avoid duplicated serial port filenames within busy_serial_ports array:
+					if (not grep (/$serial_port_name/, @busy_serial_ports) ){
+						push(@busy_serial_ports, $serial_port_name);
+					}
+				}
+			}
+		}
+	}
+}
+
+# Test every available serial port:
+foreach $serial_port (@serial_ports) {
+	my $test;
+	my $previous_port_settings;
+	# Apply settings:
+	if (-e $serial_port){
+		# Baudrate and databits settings:
+		system ("stty -F $serial_port $settings{port_baudrate} cs$settings{port_databits}");
+		# Enable input, local and special settings (including timeout):
+		system ("stty -F $serial_port ignbrk noflsh min 0 time 11");
+		# Disable control setting:
+		system ("stty -F $serial_port -crtscts");
+		# Disable input settings:
+		system ("stty -F $serial_port -brkint -icrnl -imaxbel -ixon");
+		# Disable output settings:
+		system ("stty -F $serial_port -opost -onlcr");
+		# Disable local settings:
+		system ("stty -F $serial_port -isig -icanon -iexten -echo -echoe -echok -echoctl -echoke");
+		# From the stty man page:
+		# A '[-]' before a capability means that it can be turned off by preceding it with a '-'.
+		# Control settings:
+			# [-]crtscts -> enable RTS/CTS handshaking.
+		# Input settings:
+			# [-]ignbrk -> ignore breaks.
+			# [-]brkint -> breaks cause an interrupt signal.
+			# [-]icrnl -> translate carriage return to newline.
+			# [-]imaxbel -> enable  beeping  and not flushing input buffer if
+				# a character arrives when the input buffer is full.
+			# [-]ixon -> enable XON/XOFF flow control.
+		# Output settings:
+			# [-]opost -> postprocess output.
+			# [-]onlcr -> translate newline to carriage return-newline.
+		# Local settings:
+			# [-]isig -> enable interrupt, quit, and suspend special characters.
+			# [-]icanon -> enable erase, kill, werase, and rprnt special characters.
+			# [-]iexten -> enable non-POSIX special characters.
+			# [-]echo -> echo input characters.
+			# [-]echoe -> echo erase characters as backspace-space-backspace.
+			# [-]echok -> echo a newline after a kill character.
+			# [-]echoctl -> echo control characters in that notation ('^c')
+				# instead of literally.
+			# [-]echoke -> echo the kill special character by erasing
+				# each character on the line as indicated by the echoprt and
+				# echoe settings, instead of by the echoctl and echok settings.
+			# [-]noflsh -> disable flushing after interrupt and quit special characters.
+		# Special settings:
+			# min N -> set the minimum number of characters that will satisfy
+				# a read until the time value has expired, when -icanon is set.
+			# time N -> set the  number of tenths of a second before reads time out
+				# if the min number of characters have not been read, when -icanon is set.
+		# Apply the following settings only for hardware RS232 serial ports:
+		if ($serial_port =~ "ttyS"){
+			# Save the previous settings of the port.
+			# If test is unsucessfull, they will be restored.
+			$previous_port_settings = `stty -F $serial_port --save`;
+		}
+	}
+	# Open serial port for testing:
+	open (TESTED_SERIAL_PORT_FILEHANDLE, "+<", "$serial_port") or tested_serial_port_unavailable ();
+	# Send query string:
+	if ($settings{arduino_identification_method} =~ "query_string_and_identifier"){
+		print TESTED_SERIAL_PORT_FILEHANDLE "$settings{arduino_query_string}";
+	}
+	# Read data from serial port:
+	$test = <TESTED_SERIAL_PORT_FILEHANDLE>;
+	#If there is no data from serial port at all:
+	if (not defined($test)){
+		close (TESTED_SERIAL_PORT_FILEHANDLE);
+		# Restore previous port settings (only for hardware RS232 serial ports):
+		if (-e $serial_port and $serial_port =~ "ttyS"){
+			system ("stty -F $serial_port $previous_port_settings");
+		}
+	} else {
+		# Identify the wanted arduino device:
+		chomp $test; # remove any newline characters.
+		$test =~ s/\s//; # trim any whitespace characters.
+		# Check the length and contents of the string from serial port:
+		if (length($test) > length($settings{arduino_identifier}) and $test =~ $settings{arduino_identifier}) {
+			$arduino_serial_port = $serial_port;
+			close (TESTED_SERIAL_PORT_FILEHANDLE);
+		} else {
+			close (TESTED_SERIAL_PORT_FILEHANDLE);
+			# Restore previous port settings (only for hardware RS232 serial ports):
+			if (-e $serial_port and $serial_port =~ "ttyS"){
+				system ("stty -F $serial_port $previous_port_settings");
+			}
+		}
+	}
+}
+
+### DISPLAY SERIAL PORTS INFORMATION:
+###
+my $serial_ports_info_date_and_time = strftime('%d %B %Y %H:%M:%S', localtime);
+print "$serial_ports_info_date_and_time\n";
+
+# Display information about the busy serial ports -
+# these are the ports used by other programs:
+my $number_of_busy_serial_ports = scalar @busy_serial_ports;
+if ($number_of_busy_serial_ports > 0){
+	if ($number_of_busy_serial_ports == 1) {
+		print "$number_of_busy_serial_ports busy serial port:\n";
+	} else {
+		print "$number_of_busy_serial_ports busy serial ports:\n";
+	}
+	foreach $busy_serial_port (@busy_serial_ports) {
+		print "$busy_serial_port\n";
+	}
+}
+
+# Display information about the blacklisted ports -
+# these are disconnected Arduino ports;
+# they will not be tested for a short, predefined period of time.
+my $number_of_blacklisted_ports = scalar @blacklisted_ports;
+if ($number_of_blacklisted_ports > 0){
+	if ($number_of_blacklisted_ports == 1) {
+		print "$number_of_blacklisted_ports blacklisted serial port:\n";
+	} else {
+		print "$number_of_blacklisted_ports blacklisted serial ports:\n";
+	}
+	foreach $blacklisted_port (@blacklisted_ports) {
+		print "$blacklisted_port\n";
+	}
+}
+
+# Display information about the available serial ports.
+# These are port not used by another application or not blacklisted.
+my $number_of_serial_ports = scalar @serial_ports;
+if ($number_of_serial_ports < 1) {
+	print "No available serial ports found!\n";
+} else {
+	if ($number_of_serial_ports == 1) {
+		print "$number_of_serial_ports available serial port:\n";
+	} else {
+		print "$number_of_serial_ports available serial ports:\n";
+	}
+}
+foreach $serial_port (@serial_ports) {
+	print "$serial_port\n";
+}
+
+# Display information about Arduino serial port:
+print "Arduino serial port is: $arduino_serial_port\n";
+if ($arduino_serial_port =~ "unavailable") {
+	tested_serial_port_unavailable ();
+}
+
+### PREPARE AND OPEN ARDUINO SERIAL PORT:
+###
+# Apply settings to Arduino serial port:
+if (defined ($arduino_serial_port) and $arduino_serial_port !~ "unavailable"){
+	# Baudrate and databits settings:
+	system ("stty -F $arduino_serial_port $settings{port_baudrate} cs$settings{port_databits}");
+	# Enable input, local and special settings (including timeout):
+	system ("stty -F $arduino_serial_port ignbrk noflsh min 0 time 15");
+	# Disable control setting:
+	system ("stty -F $arduino_serial_port -crtscts");
+	# Disable input settings:
+	system ("stty -F $arduino_serial_port -brkint -icrnl -imaxbel -ixon");
+	# Disable output settings:
+	system ("stty -F $arduino_serial_port -opost -onlcr");
+	# Disable local settings:
+	system ("stty -F $arduino_serial_port -isig -icanon -iexten -echo -echoe -echok -echoctl -echoke");
+}
+
+# Open Arduino serial port:
+open (ARDUINO_SERIAL_PORT_FILEHANDLE, "+<", "$arduino_serial_port") or serial_port_unavailable ();
+
+### PREPARE AND START GNUPLOT:
+###
+START_GNUPLOT:
+# Remember the start time of the measurement session:
+$start_date_and_time = strftime('%d %B %Y %H:%M:%S', localtime);
+$start_time = strftime('%H:%M:%S', localtime);
+open_gnu_plot_pipe ();
+gnuplot_settings ();
+
+# Main loop:
+while (1){
+	signal_handler ();
+	blacklist_timeout ();
+	# Reading data:
+	if ($test_mode =~ "disabled" and
+	$settings{arduino_identification_method} =~ "query_string_and_identifier"){
+		sleep ($settings{arduino_query_interval});
+		print ARDUINO_SERIAL_PORT_FILEHANDLE "$settings{arduino_query_string}";
+	}
+	if ($test_mode =~ "enabled"){
+		$raw_data = <STDIN>;
+	} else {
+		$raw_data = <ARDUINO_SERIAL_PORT_FILEHANDLE>;
+	}
+	$measurements_counter++;
+	if ($settings{plotting_mode} =~ "latest_measurements" and
+	$measurements_counter > $settings{plotting_latest_measurements_maximum} + 1){
+		shift (@gnuplot_measurement);
+		shift (@gnuplot_time_axis);
+	}
+	# Final plot in a file when there is no more incomming data:
+	if (not defined($raw_data)) {
+		prepare_final_plot ();
+	}
+	plotting ();
+	# When there is no more incomming data:
+	if (not defined($raw_data)) {
+		display_final_plot ();
+		serial_port_unavailable ();
+	}
+}
+
+### SUBROUTINES:
+###
+sub tested_serial_port_unavailable{
+	# Close tested serial port:
+	close (TESTED_SERIAL_PORT_FILEHANDLE);
+	if (defined ($serial_port)){
+		# Avoid duplicated serial port names within blacklisted ports:
+		if (not grep(/$serial_port/, @blacklisted_ports)){
+			push(@blacklisted_ports, $serial_port);
+			$last_blacklisting_of_serial_port = time;
+		}
+	}
+	sleep (1);
+	empty_all_serial_port_arrays ();
+	# Try again to find the serial port of your Arduino until device is found.
+	goto FIND_ARDUINO_PORT;
+}
+
+sub serial_port_unavailable{
+	# Close Arduino serial port:
+	close (ARDUINO_SERIAL_PORT_FILEHANDLE);
+	# Avoid duplicated serial port names within blacklisted ports:
+	if (not grep(/$arduino_serial_port/, @blacklisted_ports)){
+		push(@blacklisted_ports, $arduino_serial_port);
+		$last_blacklisting_of_serial_port = time;
+	}
+	sleep (1);
+	$arduino_serial_port = "unavailable";
+	empty_all_serial_port_arrays ();
+	# Try again to find the serial port of your Arduino until device is found.
+	# If Arduino is accidentally unpluged the script will wait and try to find it again.
+	goto FIND_ARDUINO_PORT;
+}
+
+sub empty_all_serial_port_arrays{
+	splice @udi, 0;
+	splice @hal_device_output, 0;
+	splice @serial_ports, 0;
+	splice @busy_serial_ports, 0;
+}
+
+sub blacklist_timeout {
+	if (time - $last_blacklisting_of_serial_port > $settings{port_blacklist_timeout}) {
+		splice @blacklisted_ports, 0;
+	}
+}
+
+sub save_configuration_changes{
+	# Create an array from all the keys of the 'user_settings' hash.
+	# The script needs to know which settings are changed and need to be saved in the configuration file.
+	my @user_settings = keys %user_settings;
+	##
+	# Open the configuration file for reading:
+	my $read_configuration_filehandle;
+	open ($read_configuration_filehandle, "<", "$configuration_file");
+	my @configuration_array_to_edit=<$read_configuration_filehandle>;
+	close ($read_configuration_filehandle);
+	my @lines_to_save;
+	my $configuration_name_to_edit;
+	my $configuration_value_to_edit;
+	foreach my $configuration_line_to_edit (@configuration_array_to_edit){
+		chomp $configuration_line_to_edit;
+		unless (length($configuration_line_to_edit) < 1 or $configuration_line_to_edit =~ m/^\s*\#/){
+			if ($configuration_line_to_edit =~ "#"){
+				(my $before_number_sign_to_edit, my $after_number_sign_to_edit)=split(/\#/,$configuration_line_to_edit);
+				$before_number_sign_to_edit =~ s/\s*$//;
+				($configuration_name_to_edit, $configuration_value_to_edit)=split(/\=/,$before_number_sign_to_edit);
+				$configuration_name_to_edit =~ s/\s*$//; # remove whitespace at the end of the string
+				$configuration_value_to_edit =~ s/^\s*//; # remove whitespace at the beginning of the string
+				if (not grep(/$configuration_name_to_edit/, @user_settings)){
+					push (@lines_to_save, $configuration_line_to_edit);
+				} else {
+					my $new_line = "$configuration_name_to_edit \= $user_settings{$configuration_name_to_edit} \#$after_number_sign_to_edit";
+					push (@lines_to_save, $new_line);
+				}
+			} else {
+				($configuration_name_to_edit, $configuration_value_to_edit)=split(/\=/,$configuration_line_to_edit);
+				$configuration_name_to_edit =~ s/\s*$//; # remove whitespace at the end of the string
+				$configuration_value_to_edit =~ s/^\s*//; # remove whitespace at the beginning of the string
+				if (not grep(/$configuration_name_to_edit/, @user_settings)){
+					push (@lines_to_save, $configuration_line_to_edit);
+				} else {
+					my $new_line = "$configuration_name_to_edit \= $user_settings{$configuration_name_to_edit}";
+					push (@lines_to_save, $new_line);
+				}
+			}
+		} elsif ($configuration_line_to_edit =~ "# arduplotter-skel.cfg - skeleton configuration file for Arduplotter, v.0.2."){
+			my $new_line = "# arduplotter.cfg - configuration file for Arduplotter, v.0.2.";
+			push (@lines_to_save, $new_line);
+		} else {
+			push (@lines_to_save, $configuration_line_to_edit);
+		}
+	}
+	# Open the configuration file for writing:
+	my $write_configuration_filehandle;
+	open ($write_configuration_filehandle, ">", "$configuration_file");
+	# Write new settings:
+	foreach my $line_to_save (@lines_to_save){
+		print $write_configuration_filehandle "$line_to_save\n";
+	}
+	close ($write_configuration_filehandle);
+}
+
+sub open_gnu_plot_pipe {
+	# Open pipe to gnuplot, disable buffering:
+	open GNUPLOT_PIPE, "| gnuplot" || die "Can't initialize gnuplot! Quitting!\n";
+	# Comment out the previous line and enable the following line for debugging the gnuplot input (very usefull!): 
+	#open GNUPLOT_PIPE, "| cat" || die "Can't initialize cat! Quitting!\n";
+	select((select(GNUPLOT_PIPE), $| = 1)[0]);
+}
+
+sub gnuplot_settings{
+	if ($final_plot =~ "disabled"){
+		print GNUPLOT_PIPE "set terminal wxt size $settings{gnuplot_real_time_plot_terminal_size} ",
+			"font '$settings{gnuplot_real_time_plot_font}' noraise\n";
+		print GNUPLOT_PIPE "set title '$settings{gnuplot_real_time_plot_title}'\n";
+	} elsif ($final_plot =~ "enabled"){
+		# To avoid overlapping with xtics on gnuplot pngcairo terminal in final plots, the xlabel is effectively removed.
+		print GNUPLOT_PIPE "set xlabel ' '\n";
+	}
+	print GNUPLOT_PIPE "set datafile sep '|'\n";
+	print GNUPLOT_PIPE "set timefmt '%H:%M:%S'\n";
+	print GNUPLOT_PIPE "set xdata time\n";
+	print GNUPLOT_PIPE "set format x '%H:%M:%S'\n";
+	print GNUPLOT_PIPE "set xtics nomirror rotate by -45\n";
+	print GNUPLOT_PIPE "set ylabel '$settings{gnuplot_y_label}'\n";
+	print GNUPLOT_PIPE "set ytics\n";
+	print GNUPLOT_PIPE "set grid\n";
+	print GNUPLOT_PIPE "set key outside right top\n";
+	print GNUPLOT_PIPE "set key reverse\n";
+	if ($settings{plotting_mode} =~ "accumulation"){
+		print GNUPLOT_PIPE "set timestamp 'Start: $start_date_and_time  Last update: %d %B %Y %T'\n";
+		if ($settings{plotting_time} =~ "clock" and $final_plot =~ "disabled"){
+			print GNUPLOT_PIPE "set xlabel '$settings{gnuplot_x_label_accumulation} - Clock'\n";
+		}
+		if ($settings{plotting_time} =~ "chronometer"){
+			print GNUPLOT_PIPE "set timefmt '%S'\n";
+			if ($final_plot =~ "disabled"){
+				print GNUPLOT_PIPE "set xlabel '$settings{gnuplot_x_label_accumulation} - Chronometer'\n";
+			}
+		}
+	}
+	if ($settings{plotting_mode} =~ "latest_measurements"){
+		print GNUPLOT_PIPE "set xlabel '$settings{plotting_latest_measurements_maximum} ",
+			"$settings{gnuplot_x_label_latest_data}'\n";
+	}
+}
+
+sub plotting {
+	# Filter only non-zero data:
+	if (defined($raw_data) and length($raw_data) > length($settings{arduino_identifier})) {
+		chomp $raw_data; # remove any newline characters.
+		if ($test_mode =~ "disabled"){
+			$raw_data =~ s/$settings{arduino_identifier}//;
+		}
+		$data = $raw_data;
+		# Date will be displayed in the following format, e.g.
+		# 21-August-2013|01:44:16
+		$last_measurement_date_and_time = strftime('%d-%B-%Y|%H:%M:%S', localtime);
+		$last_measurement_time = strftime('%H:%M:%S', localtime);
+		# Output data also to STDOUT:
+		my $output_line = "$last_measurement_date_and_time|$raw_data";
+		if ($settings{plotting_mode} =~ "accumulation" and not defined ($sigquit)){
+			print "\nCtrl-C to quit immediately without displaying final plot\n";
+			print "Ctrl-\\ to stop real-time plotting, display final plot and quit\n";
+		}
+		if ($settings{plotting_mode} =~ "latest_measurements"){
+			print "\nCtrl-C or Ctrl-\\ to quit\n";
+		}
+		if (not defined ($sigquit)){
+			print "$output_line\n";
+		}
+	}
+	# Preparing data variables and arrays:
+	my $counter = 0;
+	my @values;
+	if (defined($data) and length($data) > 0) {
+		push @values, $data;
+		$counter++;
+	}
+	# Update gnuplot, remember X-Y coordinates for the plot:
+	if ($settings{plotting_mode} =~ "accumulation" and $settings{plotting_time} =~ "clock"){
+		my $timestamp_accumulation = strftime('%H:%M:%S', localtime);
+		push @gnuplot_time_axis, $timestamp_accumulation;
+	}
+	if ($settings{plotting_mode} =~ "accumulation" and $settings{plotting_time} =~ "chronometer"){
+		$elapsed_time = $measurements_counter * $settings{arduino_query_interval};
+		push @gnuplot_time_axis, $elapsed_time;
+	}
+	if ($settings{plotting_mode} =~ "latest_measurements"){
+		my $timestamp_latest_measurements = strftime('%H:%M:%S', localtime);
+		push @gnuplot_time_axis, $timestamp_latest_measurements;
+	}
+	push @gnuplot_measurement, [@values];
+	my $max = scalar(@values);
+	for (my $plot = 0; $plot < $max; $plot++) {
+		# Time axis range definitions:
+		
+		
+		if ($test_mode =~ "disabled"){
+			if ($settings{plotting_mode} =~ "accumulation" and $settings{plotting_time} =~ "clock"){
+				print GNUPLOT_PIPE "set xrange ['$start_time':'$last_measurement_time']\n";
+			} elsif ($settings{plotting_mode} =~ "accumulation" and $settings{plotting_time} =~ "chronometer"){
+				if ($elapsed_time == 1){
+					print GNUPLOT_PIPE "set xrange [1:10]\n";
+				} else {
+					print GNUPLOT_PIPE "set xrange [1:$elapsed_time]\n";
+				}
+			} elsif ($settings{plotting_mode} =~ "latest_measurements"){
+				if ($measurements_counter == 1){
+					print GNUPLOT_PIPE "set xrange ['$start_time':'$last_measurement_time']\n";
+				} else {
+					print GNUPLOT_PIPE "set xrange ['$gnuplot_time_axis[0]':'$gnuplot_time_axis[-1]']\n";
+				}
+			}
+		} else {
+				if ($measurements_counter == 1){
+					print GNUPLOT_PIPE "set xrange [0:'$last_measurement_time']\n";
+				} else {
+					print GNUPLOT_PIPE "set xrange ['$gnuplot_time_axis[0]':'$gnuplot_time_axis[-1]']\n";
+				}
+		}
+		
+		
+		# Settings for the measured value:
+		print GNUPLOT_PIPE "plot '-' using 1:2 with lines ",
+			"linecolor rgb '$settings{gnuplot_measured_value_linecolor}' ",
+			"linewidth 1.5 title '$settings{gnuplot_measured_value_label}', ";
+		# Define constant levels:
+		print GNUPLOT_PIPE "$settings{gnuplot_maximal_value} with lines ",
+			"linecolor rgb '$settings{gnuplot_maximal_value_linecolor}' ",
+			"linewidth 1.5 title '$settings{gnuplot_maximal_value_label}', ";
+		print GNUPLOT_PIPE "$settings{gnuplot_minimal_value} with lines ",
+			"linecolor rgb '$settings{gnuplot_minimal_value_linecolor}' ",
+			"linewidth 1.5 title '$settings{gnuplot_minimal_value_label}'\n";
+		# Send the measurement data to gnuplot:
+		for (my $counter = 0; $counter < scalar(@gnuplot_measurement); $counter++){
+			print GNUPLOT_PIPE "$gnuplot_time_axis[$counter]|$gnuplot_measurement[$counter][$plot]\n";
+		}
+		print GNUPLOT_PIPE "e\n";
+	}
+}
+
+sub prepare_final_plot {
+	$final_plot = "enabled";
+	$final_plot_date_and_time = strftime('%d-%B-%Y--%H-%M-%S', localtime);
+	$final_plot_file = $script_user_directory . $NAME . "_" . $final_plot_date_and_time . ".png";
+	# gnuplot settings for the final plot:
+	print GNUPLOT_PIPE "set terminal pngcairo size $settings{gnuplot_final_plot_terminal_size} ",
+		"font '$settings{gnuplot_final_plot_font}'\n";
+	print GNUPLOT_PIPE "set output '$final_plot_file'\n";
+	print GNUPLOT_PIPE "set title '$settings{gnuplot_final_plot_title}'\n";
+	print GNUPLOT_PIPE "set timestamp 'Start: $start_date_and_time  End: %d %B %Y %T'\n";
+	gnuplot_settings ();
+}
+
+sub display_final_plot{
+	# Empty data arrays, so that data from different measurement sessions will not mix with each other.
+	splice @gnuplot_measurement, 0;
+	splice @gnuplot_time_axis, 0;
+	close GNUPLOT_PIPE;
+	# Display final plot file using ImageMagick in a separate process:
+	if (-e $final_plot_file){
+		my $pid = fork ();
+		if($pid == 0)
+		{
+			`display $final_plot_file`;
+			exit(0);
+		}
+	}
+}
+
+sub signal_handler {
+	# When a SIGINT is received (Ctrl-C was pressed), exit gracefully:
+	$SIG{INT} = sub {
+		close GNUPLOT_PIPE;
+		close (ARDUINO_SERIAL_PORT_FILEHANDLE);
+		print "\n\n$NAME, v.$VERSION\n";
+		print "SIGINT received, quitting.\n";
+		print "Most probably Ctrl-C was pressed.\n\n";
+		exit;
+	};
+	# When a SIGQUIT is received (Ctrl-\ was pressed) and some data was
+	# sent from the device, display the final plot and exit gracefully:
+	$SIG{QUIT} = sub {
+		if (defined($start_date_and_time) and $settings{plotting_mode} =~ "accumulation"){
+			print "\n\n$NAME, v.$VERSION\n";
+			print "SIGQUIT received, displaying final plot and quitting.\n";
+			print "Most probably Ctrl-\\ was pressed.\n\n";
+			$sigquit = "received";
+			open_gnu_plot_pipe ();
+			prepare_final_plot ();
+			plotting ();
+			close (ARDUINO_SERIAL_PORT_FILEHANDLE);
+			display_final_plot ();
+		} elsif (not defined($start_date_and_time) and $settings{plotting_mode} =~ "accumulation") {
+			print "\n\n$NAME, v.$VERSION\n";
+			print "SIGQUIT received and no device found. Quitting.\n";
+			print "Most probably Ctrl-\\ was pressed.\n\n";
+		} elsif ($settings{plotting_mode} =~ "latest_measurements") {
+			print "\n\n$NAME, v.$VERSION\n";
+			print "SIGQUIT received. Quitting.\n";
+			print "Most probably Ctrl-\\ was pressed.\n\n";
+		}
+		exit;
+	};
+}
+
+sub help {
+	print <<HELP;
+
+Usage:
+$RealScript --argument-one=value --argument-two=value
+$RealScript -A1=value -A2=value
+
+$NAME can be started with no command line arguments
+or with one or more of them in any order.
+No combination will force the program to exit,
+but some arguments make no sense together and
+one of them will override one or more other arguments:
+--help (obviously) makes other arguments useless.
+--id-method=id-only does not honour --query.
+--plotting=latest_measurements makes --time useless.
+--test does not honour --id-method and --query.
+
+The following command line arguments are supported:
+
+-IM,  --id-method
+        Arduino identification method - 'query-id' or 'id-only'
+        Arduino device can be detected by using one of the two configurable methods:
+        1. Sending a query string to the board and waiting for a predefined identifier or
+        2. Reading a specific identifier comming out of the serial port of the Arduino device
+        without sending a query string.
+-Q,  --query
+        Your query string, if --id-method=query_string_and_identifier
+-I,  --id
+        The identifier in the beginning of your Arduino serial messages.
+        It should be entered exactly like the one in your Arduino sketch.
+-P,  --plotting
+        Two plotting modes are available - 'accumulation' or 'latest_measurements':
+        1. If 'accumulation' is selected, all measured values are accumulated in
+        a single real-time plot and after no more data is comming from the device or
+        Ctrl-\ is pressed, a final plot file is produced and displayed.
+        If 'latest_measurements' is selected, only latest N number of mesurements are displayed.
+-TM,  --time
+        How time should be displayed - options are 'clock' or 'chronometer'.
+        If 'clock' is selected, time will be displayed from start to end
+        just like on your computer's clock, but if 'chronometer' is selected,
+        time will be counted from your first measurement.
+        This option is honoured only if plotting mode is et to 'accumulation'.
+-T,  --test
+        No Arduino device around to test the program? No problem!
+        Execute the following command:
+        $pc_test_filename | $RealScript --test
+        and you will get an impression of how $NAME plots data in real time.
+        Two Arduino test sketches are also available in $script_user_directory
+        You can upload them and further test the $NAME functionality.
+-H,  --help
+        this help
+HELP
+	exit;
+}
+
+__END__
