@@ -1,8 +1,9 @@
   
-Arduplotter v. 0.3  
+Perl Arduino Plotter v. 0.3  
+(former Arduplotter, renamed to avoid confusion with http://arduplotter.com/ created by Chris Rogers)
   
 Real-time plotter for Arduino devices.  
-Arduplotter reads data from an Arduino serial port and produces a real-time plot using gnuplot.  
+Perl Arduino Plotter reads data from an Arduino serial port and produces a real-time plot using gnuplot.  
 This script is licensed under the GNU Free Documentation License 1.2.  
   
 Dimitar D. Mitov, 2013.  
