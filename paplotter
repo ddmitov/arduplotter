@@ -78,7 +78,7 @@
 
 # These variables are considered read-only.
 my $NAME = "Perl Arduino Plotter";
-my $VERSION = "0.2";
+my $VERSION = "0.3";
 
 ### HEADING:
 ###
@@ -829,8 +829,8 @@ sub save_configuration_changes{
 					push (@lines_to_save, $new_line);
 				}
 			}
-		} elsif ($configuration_line_to_edit =~ "# paplotter-skel.cfg - skeleton configuration file for Perl Arduino Plotter, v.0.2."){
-			my $new_line = "# paplotter.cfg - configuration file for Perl Arduino Plotter, v.0.2.";
+		} elsif ($configuration_line_to_edit =~ "# paplotter-skel.cfg - skeleton configuration file for Perl Arduino Plotter, v.0.3."){
+			my $new_line = "# paplotter.cfg - configuration file for Perl Arduino Plotter, v.0.3.";
 			push (@lines_to_save, $new_line);
 		} else {
 			push (@lines_to_save, $configuration_line_to_edit);
