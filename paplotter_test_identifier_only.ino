@@ -1,8 +1,8 @@
 /*
-Test sketch for Arduplotter, v. 0.2.
+Test sketch for Perl Arduino Plotter, v. 0.2.
 Identification method: identifier only
 Identification: TEST
-Upload this sketch on an Arduino device to test Arduplotter.
+Upload this sketch on an Arduino device to test Perl Arduino Plotter.
 This sketch is in the public domain.
 */
 

@@ -1,8 +1,8 @@
 #!/usr/bin/perl
 
-# Arduplotter v. 0.3
+# Perl Arduino Plotter v. 0.3
 # Real-time plotter for Arduino devices.
-# Arduplotter reads data from an Arduino serial port and produces a real-time plot using gnuplot.
+# Perl Arduino Plotter reads data from an Arduino serial port and produces a real-time plot using gnuplot.
 # This script is licensed under the GNU Free Documentation License 1.2.
 
 # Dimitar D. Mitov, 2013.
@@ -22,7 +22,7 @@
 # Arduino device can be detected by using one of the two configurable methods:
 # 1.) Sending a query string to the board and waiting for a predefined identifier or
 # 2.) Reading a specific identifier comming out of the serial port of the Arduino device.
-# All the settings are stored in ~/arduplotter/arduplotter.cfg.
+# All the settings are stored in ~/paplotter/paplotter.cfg.
 # This file can be changed at any time with any text editor.
 # Settings from command line are also saved in the configuration file for later reuse.
 
@@ -77,7 +77,7 @@
 # http://stackoverflow.com/questions/10921043/how-to-use-gnuplot-to-plot-a-time-series-chart-from-a-csv-file-date-and-time-sto
 
 # These variables are considered read-only.
-my $NAME = "Arduplotter";
+my $NAME = "Perl Arduino Plotter";
 my $VERSION = "0.2";
 
 ### HEADING:
@@ -103,16 +103,16 @@ use FindBin qw($Bin $RealScript);
 ### INITIALIZATION OF VARIABLES AND ARRAYS:
 ###
 # Filenames:
-my $skeleton_configuration_filename = "arduplotter_skel.cfg";
-my $configuration_filename = "arduplotter.cfg";
-my $arduino_test_identifier_only_filename = "arduplotter_test_identifier_only.ino";
-my $arduino_test_query_identifier_filename = "arduplotter_test_query_identifier.ino";
-my $pc_test_filename = "arduplotter_test";
+my $skeleton_configuration_filename = "paplotter_skel.cfg";
+my $configuration_filename = "paplotter.cfg";
+my $arduino_test_identifier_only_filename = "paplotter_test_identifier_only.ino";
+my $arduino_test_query_identifier_filename = "paplotter_test_query_identifier.ino";
+my $pc_test_filename = "paplotter_test";
 # Folders:
-my $script_user_directory = "$ENV{HOME}/arduplotter/";
+my $script_user_directory = "$ENV{HOME}/paplotter/";
 my $script_common_directory;
-if (-d "/etc/arduplotter/"){
-	$script_common_directory = "/etc/arduplotter/";
+if (-d "/etc/paplotter/"){
+	$script_common_directory = "/etc/paplotter/";
 } else {
 	$script_common_directory = "$Bin/";
 }
@@ -829,8 +829,8 @@ sub save_configuration_changes{
 					push (@lines_to_save, $new_line);
 				}
 			}
-		} elsif ($configuration_line_to_edit =~ "# arduplotter-skel.cfg - skeleton configuration file for Arduplotter, v.0.2."){
-			my $new_line = "# arduplotter.cfg - configuration file for Arduplotter, v.0.2.";
+		} elsif ($configuration_line_to_edit =~ "# paplotter-skel.cfg - skeleton configuration file for Perl Arduino Plotter, v.0.2."){
+			my $new_line = "# paplotter.cfg - configuration file for Perl Arduino Plotter, v.0.2.";
 			push (@lines_to_save, $new_line);
 		} else {
 			push (@lines_to_save, $configuration_line_to_edit);
